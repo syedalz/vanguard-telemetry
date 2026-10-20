@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+pydantic
+sqlmodel
+psycopg[binary]
+paho-mqtt
+pytest
+httpx
