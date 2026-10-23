@@ -1,5 +1,6 @@
 from paho.mqtt import client as mqtt_client
-
+from app.models.telemetry import TelemetryMessage
+from pydantic import ValidationError
 
 broker = 'localhost'
 port = 1883
@@ -10,7 +11,15 @@ client_id = "vanguard-backend"
 def connect_mqtt():
 
     def on_message(client, userdata, msg):
-            print(f"Received `{msg.payload.decode()}` from `{msg.topic}` topic")
+
+        try:
+            data = TelemetryMessage.model_validate_json(msg.payload)
+
+            print(f"{data.asset_id} seq {data.seq} OK")
+
+        except ValidationError as e:
+            print(f"Rejected message from {msg.topic}: {e}")
+
 
 
 
