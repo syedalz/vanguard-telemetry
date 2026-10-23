@@ -21,8 +21,6 @@ def connect_mqtt():
             print(f"Rejected message from {msg.topic}: {e}")
 
 
-
-
     def on_connect(client, userdata, flags, reason_code, properties):
         if reason_code == 0:
             print("Connected to MQTT Broker!")

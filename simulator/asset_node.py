@@ -106,8 +106,6 @@ class AssetNode:
         """Tick and publish once a second until the stop event is set."""
         seq = 1
 
-
-
         # wait(1) sleeps up to 1s and returns True as soon as the event is set
         while not event.wait(1):
             self.tick()

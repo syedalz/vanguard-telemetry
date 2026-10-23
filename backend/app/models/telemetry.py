@@ -12,3 +12,4 @@ class TelemetryMessage(BaseModel):
     hyd_pressure_bar: float = Field(strict=True, ge=0, description="Hydraulic system pressure, bar")
     vibration_mm_s: float = Field(strict=True, ge=0, description="Vibration velocity, mm/s")
     fuel_pct: float = Field(strict=True, ge=0, le=100, description="Fuel tank level, % of capacity")
+    
