@@ -1,7 +1,8 @@
 from paho.mqtt import client as mqtt_client
 import random
 import json
-from datetime import datetime, timezone
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 
 
@@ -90,8 +91,9 @@ class AssetNode:
         """Return the current reading as a JSON string."""
         return json.dumps({
             "asset_id": self.asset_id,
-            # ISO 8601 in UTC with an explicit +00:00 offset
-            "timestamp": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+            "asset_type": self.asset_type,
+            # ISO 8601 in Mountain Time; offset is -07:00 (MST) or -06:00 (MDT)
+            "timestamp": datetime.now(ZoneInfo("America/Denver")).isoformat(timespec="milliseconds"),
             # Rises by one every reading, so the backend can spot lost messages
             "seq": seq,
             "engine_temp_c": round(self.engine_temp_c, 2),
