@@ -7,6 +7,9 @@ from pydantic import ValidationError
 from app.models.telemetry import TelemetryMessage
 
 
+
+
+
 def valid_payload(**overrides):
     # A known-good message; tests pass overrides to break one field at a time
     payload = {
