@@ -1,8 +1,7 @@
 from paho.mqtt import client as mqtt_client
 import random
 import json
-from datetime import datetime
-from zoneinfo import ZoneInfo
+from datetime import datetime, timezone
 
 
 
@@ -19,6 +18,10 @@ class AssetNode:
         "fuel_pct": (50,95)
     }
 
+    # Refuel when fuel drops below this, back up to a random level in this range.
+    REFUEL_RANGE_PCT = (80,99)
+    REFUEL_BELOW_PCT = 10
+
 
     # How much each value jitters per tick (standard deviation)
     NOISE = {
@@ -27,12 +30,31 @@ class AssetNode:
         "vibration_mm_s": 0.15,
     }
 
+    # Stores which fault corresponds to which sensor
+    FAULT_SENSORS= {
+
+        "coolant_leak": "engine_temp_c",
+        "hydraulic_leak": "hyd_pressure_bar",
+        "worn_parts": "vibration_mm_s"
+    }
+
     # Fraction of the gap to the normal midpoint closed each tick
     PULL = 0.05
 
     # Chance per tick of dropping offline, and how many ticks an outage lasts
-    OFFLINE_CHANCE = 0.02
+    OFFLINE_CHANCE = 0.002
     OFFLINE_TICKS = (3, 10)
+
+    # Chance per tick of a fault starting, how many ticks it lasts, and how each fault distorts its sensor
+    FAULT_CHANCE = 0.0005
+    DURATION_RANGE = (20,1000)
+    COOLANT_CLIMB_RATE_C = (0.3, 0.5)
+    COOLANT_MAX_TEMP_C = 120
+    HYD_LEAK_EXTRA_DROP_CHANCE = 0.003
+    HYD_LEAK_DROP_BAR = (25, 50)
+    HYD_MIN_PRESSURE_BAR = 5
+    WEAR_SPIKE_MM_S = (7,12)
+    WEAR_SPIKE_CHANCE = 0.15
 
     def __init__(self,asset_id,asset_type,broker_host,port):
 
@@ -50,6 +72,11 @@ class AssetNode:
         self.fuel_pct = random.uniform(*self.NORMAL_RANGES["fuel_pct"])
         # Ticks remaining in the current outage; 0 means online
         self.offline_ticks_left = 0
+        # Fault state; fault_type None means healthy
+        self.fault_type = None
+        self.fault_offset = 0
+        self.fault_ticks_elapsed = 0
+        self.fault_duration = None
 
 
     def drift(self, value, key):
@@ -58,14 +85,61 @@ class AssetNode:
         middle = (low + high) / 2
         return value + self.PULL * (middle - value) + random.gauss(0, self.NOISE[key])
 
-    def tick(self):
+    def tick(self, timestamp):
         """Advance all sensor values by one time step."""
         self.engine_temp_c = self.drift(self.engine_temp_c, "engine_temp_c")
         self.hyd_pressure_bar = self.drift(self.hyd_pressure_bar, "hyd_pressure_bar")
         # Vibration can't be negative
         self.vibration_mm_s = max(0, self.drift(self.vibration_mm_s, "vibration_mm_s"))
-        # Fuel only ever goes down, and stops at empty
+        # Fuel only ever goes down, and refuels below 10%
         self.fuel_pct = max(0, self.fuel_pct - random.uniform(0.005, 0.02))
+        if self.fuel_pct < self.REFUEL_BELOW_PCT:
+            self.fuel_pct = random.uniform(*self.REFUEL_RANGE_PCT)
+
+        if (self.fault_type is None) and (random.random() < self.FAULT_CHANCE):
+            self.fault_type = random.choice(list(self.FAULT_SENSORS.keys()))
+            self.fault_duration = random.randint(*self.DURATION_RANGE)
+            self.fault_ticks_elapsed = 0
+
+            print(f"{self.asset_id}: {self.fault_type} started at {timestamp}")
+
+        if self.fault_type is not None:
+            self.fault_ticks_elapsed +=1
+            
+            if (self.fault_type == "coolant_leak"):
+                self.fault_offset += random.uniform(*self.COOLANT_CLIMB_RATE_C)
+                reported_temp = (self.engine_temp_c + self.fault_offset)
+                if reported_temp > self.COOLANT_MAX_TEMP_C:
+                    self.fault_offset = self.COOLANT_MAX_TEMP_C - self.engine_temp_c
+
+            elif (self.fault_type == "hydraulic_leak"):
+               
+                if (self.fault_ticks_elapsed == 1) or (random.random() < self.HYD_LEAK_EXTRA_DROP_CHANCE):
+                    self.fault_offset -= random.uniform(*self.HYD_LEAK_DROP_BAR)
+
+                reported_pressure = self.hyd_pressure_bar + self.fault_offset
+                   
+                if (reported_pressure < self.HYD_MIN_PRESSURE_BAR):
+                    self.fault_offset = self.HYD_MIN_PRESSURE_BAR - self.hyd_pressure_bar
+
+
+            elif (self.fault_type == "worn_parts"):
+
+                if (random.random() < self.WEAR_SPIKE_CHANCE):
+
+                    self.fault_offset = random.uniform(*self.WEAR_SPIKE_MM_S)
+
+                else:
+                    self.fault_offset = 0
+
+            if (self.fault_ticks_elapsed >= self.fault_duration):
+                print(f"{self.asset_id}: {self.fault_type} serviced at {timestamp}")
+                self.fault_type = None
+                self.fault_offset = 0
+                self.fault_ticks_elapsed = 0
+                self.fault_duration = None
+                
+
 
     def connect_mqtt(self):
         """Create this asset's MQTT client and connect it to the broker."""
@@ -87,20 +161,31 @@ class AssetNode:
         self.client = client
 
 
-    def build_payload(self, seq):
+    def build_payload(self, seq, timestamp):
         """Return the current reading as a JSON string."""
-        return json.dumps({
+
+        payload_dict = {
             "asset_id": self.asset_id,
             "asset_type": self.asset_type,
-            # ISO 8601 in Mountain Time; offset is -07:00 (MST) or -06:00 (MDT)
-            "timestamp": datetime.now(ZoneInfo("America/Denver")).isoformat(timespec="milliseconds"),
+            # ISO 8601 in UTC with an explicit +00:00 offset
+            "timestamp": timestamp,
             # Rises by one every reading, so the backend can spot lost messages
             "seq": seq,
             "engine_temp_c": round(self.engine_temp_c, 2),
-            "hyd_pressure_bar": round(self.hyd_pressure_bar, 1),
+            "hyd_pressure_bar": round(self.hyd_pressure_bar, 2),
             "vibration_mm_s": round(self.vibration_mm_s, 2),
             "fuel_pct": round(self.fuel_pct, 2),
-        })
+        }
+
+
+        if self.fault_type is not None:
+
+            sensor = self.FAULT_SENSORS[self.fault_type]
+            payload_dict[sensor] += self.fault_offset
+            payload_dict[sensor] = round(payload_dict[sensor],2)
+
+        
+        return json.dumps(payload_dict)
 
     def publish(self,event):
         """Tick and publish once a second until the stop event is set."""
@@ -108,7 +193,8 @@ class AssetNode:
 
         # wait(1) sleeps up to 1s and returns True as soon as the event is set
         while not event.wait(1):
-            self.tick()
+            current_time = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+            self.tick(current_time)
 
             # Maybe start a new outage (only while online)
             if self.offline_ticks_left == 0 and random.random() < self.OFFLINE_CHANCE:
@@ -122,7 +208,7 @@ class AssetNode:
                 if self.offline_ticks_left == 0:
                     print(f"{self.asset_id}: Back online")
             else:
-                msg = self.build_payload(seq)
+                msg = self.build_payload(seq,current_time)
                 result = self.client.publish(self.topic, msg)
                 status = result[0]
                 if status != 0:
