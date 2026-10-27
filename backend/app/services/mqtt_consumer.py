@@ -27,6 +27,25 @@ def connect_mqtt(conn, detector, manager):
     
     """
 
+    alert_insert_query =  """
+                                                        
+        INSERT INTO alerts (asset_id, sensor, opened_value, opened_at, methods)
+
+        VALUES (%s, %s, %s, %s, %s)
+
+        """
+
+    alert_resolve_query = """
+
+        UPDATE alerts
+        SET resolved_at = %s
+        WHERE asset_id = %s
+        AND sensor = %s
+        AND resolved_at IS NULL
+
+
+    """
+
     def on_message(client, userdata, msg):
 
         try:
@@ -45,16 +64,28 @@ def connect_mqtt(conn, detector, manager):
                 zscore_results = detector.check(data)
                 events = manager.update(data, threshold_results, zscore_results)
 
+
+
                 for event in events:
                    
                     if event["type"] == "opened":
                         methods = ', '.join(sorted(event['methods']))
                         print(f"ALERT OPENED   {event['asset_id']} {event['sensor']}={event['value']} at {ts} ({methods})")
 
+                
+                        alert_data = (event["asset_id"], event["sensor"], event["value"], event["timestamp"], sorted(event["methods"]))
+                        cur.execute(alert_insert_query, alert_data )
+
                     elif event["type"] == "resolved":
                         # Whole seconds, so the duration doesn't print with microseconds
                         duration = timedelta(seconds=int((event['timestamp'] - event['opened_at']).total_seconds()))
                         print(f"ALERT RESOLVED {event['asset_id']} {event['sensor']} after {duration}")
+
+                
+                        alert_data = (event["timestamp"],event["asset_id"], event["sensor"])
+                        cur.execute(alert_resolve_query, alert_data )
+
+
 
             elif cur.rowcount == 0:
                 print(f"Duplicate row skipped: {data.asset_id} at time {data.timestamp} ")
@@ -65,11 +96,7 @@ def connect_mqtt(conn, detector, manager):
             print(f"Rejected message from {msg.topic}: {e}")
 
         except psycopg.Error as e:
-            print(f"Failed to insert message {data.asset_id}: {e} .")
-
-
-       
-
+            print(f"Database error for {data.asset_id}: {e}")
 
 
     def on_connect(client, userdata, flags, reason_code, properties):

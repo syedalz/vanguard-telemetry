@@ -14,3 +14,20 @@ CREATE TABLE telemetry_messages (
 
 -- Turn the table into a TimescaleDB hypertable partitioned by time
 SELECT create_hypertable('telemetry_messages', 'timestamp');
+
+-- One row per alert; resolved_at is NULL while the alert is still open
+CREATE TABLE alerts (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    asset_id TEXT NOT NULL,
+    sensor TEXT NOT NULL,
+    opened_value DOUBLE PRECISION NOT NULL,
+    opened_at TIMESTAMPTZ NOT NULL,
+    resolved_at TIMESTAMPTZ,
+    methods TEXT[] NOT NULL
+);
+
+-- At most one open alert per asset and sensor
+CREATE UNIQUE INDEX alerts_one_open_per_sensor
+    ON alerts (asset_id, sensor)
+    WHERE resolved_at IS NULL;
+

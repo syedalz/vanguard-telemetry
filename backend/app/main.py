@@ -14,6 +14,21 @@ async def lifespan(app: FastAPI):
     conn = psycopg.connect(connection_uri, autocommit=True)
     detector = ZScoreDetector()
     manager = AlertManager()
+    # Alerts left open by the last run can't be tracked anymore (the AlertManager
+    # starts empty), so close them before new alerts can open for the same sensors
+    resolve_query = """
+
+        UPDATE alerts
+        SET resolved_at = NOW()
+        WHERE resolved_at IS NULL
+
+
+    """
+    cur = conn.cursor()
+    cur.execute(resolve_query)
+    count = cur.rowcount
+
+    print(f"Closed {count} alerts left open by the last run.")
     client = connect_mqtt(conn, detector, manager)
     # Handles MQTT traffic on a background thread
     client.loop_start()
