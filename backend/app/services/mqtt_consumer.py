@@ -3,14 +3,14 @@ from app.models.telemetry import TelemetryMessage
 from app.services.anomaly import check_threshold
 from pydantic import ValidationError
 import psycopg
-from datetime import timezone
+from datetime import timedelta, timezone
 broker = 'localhost'
 port = 1883
 # Wildcards match every asset type and asset id, e.g. fleet/haul_truck/truck-01/telemetry
 topic = "fleet/+/+/telemetry"
 client_id = "vanguard-backend"
 
-def connect_mqtt(conn, detector):
+def connect_mqtt(conn, detector, manager):
     """Build an MQTT client that validates each telemetry message and stores it via conn."""
 
     cur = conn.cursor()
@@ -41,11 +41,20 @@ def connect_mqtt(conn, detector):
             if cur.rowcount == 1:
                 ts = data.timestamp.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-                for r in check_threshold(data):
-                    print(f"ALERT {data.asset_id} {ts} threshold {r['sensor']}={r['value']} (limit {r['limit']}, {r['direction']})")
+                threshold_results = check_threshold(data)
+                zscore_results = detector.check(data)
+                events = manager.update(data, threshold_results, zscore_results)
 
-                for r in detector.check(data):
-                    print(f"ALERT {data.asset_id} {ts} zscore    {r['sensor']}={r['value']} (z={r['z_score']:.1f}, mean {r['mean']:.1f})")
+                for event in events:
+                   
+                    if event["type"] == "opened":
+                        methods = ', '.join(sorted(event['methods']))
+                        print(f"ALERT OPENED   {event['asset_id']} {event['sensor']}={event['value']} at {ts} ({methods})")
+
+                    elif event["type"] == "resolved":
+                        # Whole seconds, so the duration doesn't print with microseconds
+                        duration = timedelta(seconds=int((event['timestamp'] - event['opened_at']).total_seconds()))
+                        print(f"ALERT RESOLVED {event['asset_id']} {event['sensor']} after {duration}")
 
             elif cur.rowcount == 0:
                 print(f"Duplicate row skipped: {data.asset_id} at time {data.timestamp} ")

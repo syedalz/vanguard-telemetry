@@ -43,8 +43,8 @@ class AssetNode:
     OFFLINE_TICKS = (3, 10)
 
     # Chance per tick of a fault starting, how many ticks it lasts, and how each fault distorts its sensor
-    FAULT_CHANCE = 0.01
-    DURATION_RANGE = (20,1000)
+    FAULT_CHANCE = 0.0005
+    DURATION_RANGE = (200,1000)
     COOLANT_CLIMB_RATE_C = (0.3, 0.5)
     COOLANT_MAX_TEMP_C = 120
     HYD_LEAK_EXTRA_DROP_CHANCE = 0.003
