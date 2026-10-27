@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 from app.services.mqtt_consumer import connect_mqtt
+from app.services.anomaly import ZScoreDetector
 import psycopg
 
 connection_uri = "postgresql://vanguard:vanguard@localhost:5432/telemetry"
@@ -11,7 +12,8 @@ async def lifespan(app: FastAPI):
 
     # autocommit so each inserted reading is saved immediately
     conn = psycopg.connect(connection_uri, autocommit=True)
-    client = connect_mqtt(conn)
+    detector = ZScoreDetector()
+    client = connect_mqtt(conn, detector)
     # Handles MQTT traffic on a background thread
     client.loop_start()
     yield

@@ -1,5 +1,5 @@
 import statistics
-from collections import deque
+from collections import deque, defaultdict
 
 class ZScoreDetector:
 
@@ -42,7 +42,80 @@ class ZScoreDetector:
         return res
 
 
+class AlertManager:
+
+    SENSORS = ["engine_temp_c", "hyd_pressure_bar", "vibration_mm_s"]
+
+    RECOVERY_READINGS = 30
+
+    def __init__(self):
+        self.open_alerts = {}
+
+
+    def update(self, msg, threshold_results, zscore_results):
+
+        breaches = defaultdict(set)
+        for r in threshold_results:
+            breaches[r["sensor"]].add("threshold")
+
+        for r in zscore_results:
+            breaches[r["sensor"]].add("zscore")
+
+        events = []
+
+        for sensor in self.SENSORS:
+            key = (msg.asset_id,sensor)
+            is_open = key in self.open_alerts
+            breached = sensor in breaches
+
+            if breached and not is_open:
+                self.open_alerts[key] = {"opened_at": msg.timestamp, "methods": set(breaches[sensor]), "healthy_streak": 0}
+                events.append({
+                    "type": "opened",
+                    "asset_id": msg.asset_id,
+                    "sensor": sensor,
+                    "timestamp": msg.timestamp,        
+                    "value": getattr(msg, sensor),    
+                    "methods": set(breaches[sensor]),
+                })
             
+            elif breached and is_open:
+                self.open_alerts[key]["healthy_streak"] = 0
+                self.open_alerts[key]["methods"] |= breaches[sensor]
+
+
+            elif is_open and not breached:
+                self.open_alerts[key]["healthy_streak"] +=1
+                if self.open_alerts[key]["healthy_streak"] >= self.RECOVERY_READINGS:
+                    alert = self.open_alerts.pop(key)
+                    events.append({
+                        "type": "resolved",
+                        "asset_id": msg.asset_id,
+                        "sensor": sensor,
+                        "timestamp": msg.timestamp,        
+                        "value": getattr(msg, sensor),    
+                        "opened_at": alert["opened_at"],                  
+                        "methods": alert["methods"],          
+                    })
+
+
+        return events
+
+        
+
+        
+
+
+            
+
+            
+
+
+
+
+
+
+
 
 
 THRESHOLDS = {

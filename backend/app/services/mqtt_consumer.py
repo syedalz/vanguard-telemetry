@@ -1,14 +1,16 @@
 from paho.mqtt import client as mqtt_client
 from app.models.telemetry import TelemetryMessage
+from app.services.anomaly import check_threshold
 from pydantic import ValidationError
 import psycopg
+from datetime import timezone
 broker = 'localhost'
 port = 1883
 # Wildcards match every asset type and asset id, e.g. fleet/haul_truck/truck-01/telemetry
 topic = "fleet/+/+/telemetry"
 client_id = "vanguard-backend"
 
-def connect_mqtt(conn):
+def connect_mqtt(conn, detector):
     """Build an MQTT client that validates each telemetry message and stores it via conn."""
 
     cur = conn.cursor()
@@ -37,16 +39,27 @@ def connect_mqtt(conn):
 
             # rowcount is 0 when ON CONFLICT skipped the row
             if cur.rowcount == 1:
-                print(f"{data.asset_id} seq {data.seq} OK")
+                ts = data.timestamp.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+                for r in check_threshold(data):
+                    print(f"ALERT {data.asset_id} {ts} threshold {r['sensor']}={r['value']} (limit {r['limit']}, {r['direction']})")
+
+                for r in detector.check(data):
+                    print(f"ALERT {data.asset_id} {ts} zscore    {r['sensor']}={r['value']} (z={r['z_score']:.1f}, mean {r['mean']:.1f})")
 
             elif cur.rowcount == 0:
                 print(f"Duplicate row skipped: {data.asset_id} at time {data.timestamp} ")
+
+            
 
         except ValidationError as e:
             print(f"Rejected message from {msg.topic}: {e}")
 
         except psycopg.Error as e:
             print(f"Failed to insert message {data.asset_id}: {e} .")
+
+
+       
 
 
 

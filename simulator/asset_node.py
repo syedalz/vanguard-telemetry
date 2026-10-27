@@ -3,9 +3,6 @@ import random
 import json
 from datetime import datetime, timezone
 
-
-
-
 class AssetNode:
     """One simulated fleet asset that drifts its sensor values and publishes them to MQTT."""
 
@@ -46,7 +43,7 @@ class AssetNode:
     OFFLINE_TICKS = (3, 10)
 
     # Chance per tick of a fault starting, how many ticks it lasts, and how each fault distorts its sensor
-    FAULT_CHANCE = 0.0005
+    FAULT_CHANCE = 0.01
     DURATION_RANGE = (20,1000)
     COOLANT_CLIMB_RATE_C = (0.3, 0.5)
     COOLANT_MAX_TEMP_C = 120

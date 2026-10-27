@@ -6,7 +6,7 @@ from pydantic import ValidationError
 
 from app.models.telemetry import TelemetryMessage
 from tests.test_message import valid_payload, parse
-from app.services.anomaly import check_threshold, z_score, ZScoreDetector
+from app.services.anomaly import check_threshold, z_score, ZScoreDetector, AlertManager
 
 
 # Checks if a healthy reading reports no breaches
@@ -175,3 +175,119 @@ def test_positive_anomaly_flagged():
     assert res[0]["sensor"] == "vibration_mm_s"
     assert res[0]["value"] == 10.0
     assert res[0]["z_score"] > ZScoreDetector.CUTOFF
+
+
+# Made-up check results, so these tests only exercise the alert logic
+BREACH = [{"sensor": "hyd_pressure_bar"}]
+
+
+def healthy_streak(manager, count, asset_id="truck-01"):
+    # Sends count healthy readings and returns every event they produced
+    events = []
+    for i in range(count):
+        events += manager.update(reading(i + 1, asset_id), [], [])
+    return events
+
+
+# Checks a first breach opens an alert, and a repeat breach doesn't open another
+def test_breach_opens_alert_once():
+    manager = AlertManager()
+
+    events = manager.update(reading(1), BREACH, [])
+
+    assert len(events) == 1
+    assert events[0]["type"] == "opened"
+    assert events[0]["sensor"] == "hyd_pressure_bar"
+    assert events[0]["methods"] == {"threshold"}
+
+    assert manager.update(reading(2), BREACH, []) == []
+
+
+# Checks the alert resolves on exactly the 30th healthy reading
+def test_resolves_after_recovery_readings():
+    manager = AlertManager()
+    manager.update(reading(1), BREACH, [])
+
+    assert healthy_streak(manager, AlertManager.RECOVERY_READINGS - 1) == []
+
+    events = manager.update(reading(100), [], [])
+
+    assert len(events) == 1
+    assert events[0]["type"] == "resolved"
+    assert events[0]["sensor"] == "hyd_pressure_bar"
+
+
+# Checks a breach mid-streak resets it, so a full 30 more are needed
+def test_breach_resets_healthy_streak():
+    manager = AlertManager()
+    manager.update(reading(1), BREACH, [])
+    healthy_streak(manager, AlertManager.RECOVERY_READINGS - 1)
+
+    assert manager.update(reading(100), BREACH, []) == []
+
+    assert healthy_streak(manager, AlertManager.RECOVERY_READINGS - 1) == []
+
+    events = manager.update(reading(200), [], [])
+
+    assert len(events) == 1
+    assert events[0]["type"] == "resolved"
+
+
+# Checks a method that joins an open alert is listed when it resolves
+def test_resolved_lists_methods_that_joined_later():
+    manager = AlertManager()
+    manager.update(reading(1), [], BREACH)
+    manager.update(reading(2), BREACH, [])
+
+    events = healthy_streak(manager, AlertManager.RECOVERY_READINGS)
+
+    assert len(events) == 1
+    assert events[0]["methods"] == {"zscore", "threshold"}
+
+
+# Checks the "opened" event keeps its own methods when a new method joins later
+# (fails if the event and the alert share one set object)
+def test_opened_event_methods_not_changed_later():
+    manager = AlertManager()
+    opened = manager.update(reading(1), [], BREACH)[0]
+
+    manager.update(reading(2), BREACH, [])
+
+    assert opened["methods"] == {"zscore"}
+
+
+# Checks two trucks with the same sensor get separate alerts
+def test_trucks_get_separate_alerts():
+    manager = AlertManager()
+
+    first = manager.update(reading(1, "truck-01"), BREACH, [])
+    second = manager.update(reading(1, "truck-02"), BREACH, [])
+
+    assert len(first) == 1
+    assert first[0]["asset_id"] == "truck-01"
+    assert len(second) == 1
+    assert second[0]["asset_id"] == "truck-02"
+
+    # Resolving truck-01 leaves truck-02's alert open
+    events = healthy_streak(manager, AlertManager.RECOVERY_READINGS, "truck-01")
+    assert [e["asset_id"] for e in events] == ["truck-01"]
+    assert ("truck-02", "hyd_pressure_bar") in manager.open_alerts
+
+
+# Checks a healthy reading with no alert open returns nothing
+def test_healthy_reading_with_no_alert_returns_nothing():
+    assert AlertManager().update(reading(1), [], []) == []
+
+
+# Checks the resolved event's opened_at is the opening reading's timestamp
+# (the opening reading gets its own timestamp, since every other reading shares the default one)
+def test_resolved_opened_at_matches_opening_reading():
+    manager = AlertManager()
+    opening = reading(1, timestamp="2026-10-22T08:00:00.000-06:00")
+    manager.update(opening, BREACH, [])
+
+    events = healthy_streak(manager, AlertManager.RECOVERY_READINGS)
+
+    assert events[0]["type"] == "resolved"
+    assert events[0]["opened_at"] == opening.timestamp
+    assert events[0]["opened_at"] != events[0]["timestamp"]
