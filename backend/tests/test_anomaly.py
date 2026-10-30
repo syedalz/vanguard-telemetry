@@ -1,10 +1,5 @@
-import json
 from datetime import datetime, timedelta, timezone
-
 import pytest
-from pydantic import ValidationError
-
-from app.models.telemetry import TelemetryMessage
 from tests.test_message import valid_payload, parse
 from app.services.anomaly import check_threshold, z_score, ZScoreDetector, AlertManager
 
@@ -291,3 +286,67 @@ def test_resolved_opened_at_matches_opening_reading():
     assert events[0]["type"] == "resolved"
     assert events[0]["opened_at"] == opening.timestamp
     assert events[0]["opened_at"] != events[0]["timestamp"]
+
+
+# Fixed start time, so stale checks move the clock forward without real waiting
+T = datetime(2026, 10, 22, 8, 0, 0, tzinfo=timezone.utc)
+
+
+def at(seconds):
+    return T + timedelta(seconds=seconds)
+
+
+# Checks a truck is only flagged stale once it's been silent for more than 20 seconds
+def test_stale_opens_after_silence():
+    manager = AlertManager()
+    manager.seen("truck-01", T)
+
+    assert manager.check_stale(at(19)) == []
+
+    events = manager.check_stale(at(21))
+
+    assert len(events) == 1
+    assert events[0]["type"] == "opened"
+    assert events[0]["asset_id"] == "truck-01"
+    assert events[0]["sensor"] == "heartbeat"
+
+
+# Checks a truck that stays silent isn't flagged stale a second time
+def test_stale_not_opened_twice():
+    manager = AlertManager()
+    manager.seen("truck-01", T)
+    manager.check_stale(at(21))
+
+    assert manager.check_stale(at(25)) == []
+
+
+# Checks hearing from a stale truck resolves its alert, with how long it was silent
+def test_seen_resolves_stale_alert():
+    manager = AlertManager()
+    manager.seen("truck-01", T)
+    manager.check_stale(at(21))
+
+    events = manager.seen("truck-01", at(30))
+
+    assert len(events) == 1
+    assert events[0]["type"] == "resolved"
+    assert events[0]["asset_id"] == "truck-01"
+    assert events[0]["sensor"] == "heartbeat"
+    assert events[0]["value"] == pytest.approx(30)
+
+
+# Checks a truck's first message produces no events
+def test_first_seen_returns_nothing():
+    assert AlertManager().seen("truck-01", T) == []
+
+
+# Checks only the silent truck is flagged when another keeps reporting
+def test_only_silent_truck_goes_stale():
+    manager = AlertManager()
+    manager.seen("truck-01", T)
+    manager.seen("truck-02", T)
+    manager.seen("truck-02", at(15))
+
+    events = manager.check_stale(at(21))
+
+    assert [e["asset_id"] for e in events] == ["truck-01"]
