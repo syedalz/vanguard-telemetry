@@ -3,12 +3,57 @@ from app.models.telemetry import TelemetryMessage
 from app.services.anomaly import check_threshold
 from pydantic import ValidationError
 import psycopg
-from datetime import timedelta, timezone
+from datetime import datetime, timedelta, timezone
 broker = 'localhost'
 port = 1883
 # Wildcards match every asset type and asset id, e.g. fleet/haul_truck/truck-01/telemetry
 topic = "fleet/+/+/telemetry"
 client_id = "vanguard-backend"
+
+alert_insert_query =  """
+                                                    
+    INSERT INTO alerts (asset_id, sensor, opened_value, opened_at, methods)
+
+    VALUES (%s, %s, %s, %s, %s)
+
+    """
+
+alert_resolve_query = """
+
+    UPDATE alerts
+    SET resolved_at = %s
+    WHERE asset_id = %s
+    AND sensor = %s
+    AND resolved_at IS NULL
+
+"""
+
+
+def handle_events(cur ,events):
+
+    """Print each alert event and write it to the alerts table."""
+
+    for event in events:
+                       
+        if event["type"] == "opened":
+            ts = event["timestamp"].astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            methods = ', '.join(sorted(event['methods']))
+            print(f"ALERT OPENED   {event['asset_id']} {event['sensor']}={event['value']} at {ts} ({methods})")
+
+    
+            alert_data = (event["asset_id"], event["sensor"], event["value"], event["timestamp"], sorted(event["methods"]))
+            cur.execute(alert_insert_query, alert_data )
+
+        elif event["type"] == "resolved":
+            # Whole seconds, so the duration doesn't print with microseconds
+            duration = timedelta(seconds=int((event['timestamp'] - event['opened_at']).total_seconds()))
+            print(f"ALERT RESOLVED {event['asset_id']} {event['sensor']} after {duration}")
+
+    
+            alert_data = (event["timestamp"],event["asset_id"], event["sensor"])
+            cur.execute(alert_resolve_query, alert_data )
+
+
 
 def connect_mqtt(conn, detector, manager):
     """Build an MQTT client that validates each telemetry message and stores it via conn."""
@@ -27,24 +72,7 @@ def connect_mqtt(conn, detector, manager):
     
     """
 
-    alert_insert_query =  """
-                                                        
-        INSERT INTO alerts (asset_id, sensor, opened_value, opened_at, methods)
-
-        VALUES (%s, %s, %s, %s, %s)
-
-        """
-
-    alert_resolve_query = """
-
-        UPDATE alerts
-        SET resolved_at = %s
-        WHERE asset_id = %s
-        AND sensor = %s
-        AND resolved_at IS NULL
-
-
-    """
+  
 
     def on_message(client, userdata, msg):
 
@@ -58,33 +86,15 @@ def connect_mqtt(conn, detector, manager):
 
             # rowcount is 0 when ON CONFLICT skipped the row
             if cur.rowcount == 1:
-                ts = data.timestamp.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
                 threshold_results = check_threshold(data)
                 zscore_results = detector.check(data)
                 events = manager.update(data, threshold_results, zscore_results)
 
+                stale_events = manager.seen(data.asset_id, datetime.now(timezone.utc))
 
-
-                for event in events:
-                   
-                    if event["type"] == "opened":
-                        methods = ', '.join(sorted(event['methods']))
-                        print(f"ALERT OPENED   {event['asset_id']} {event['sensor']}={event['value']} at {ts} ({methods})")
-
-                
-                        alert_data = (event["asset_id"], event["sensor"], event["value"], event["timestamp"], sorted(event["methods"]))
-                        cur.execute(alert_insert_query, alert_data )
-
-                    elif event["type"] == "resolved":
-                        # Whole seconds, so the duration doesn't print with microseconds
-                        duration = timedelta(seconds=int((event['timestamp'] - event['opened_at']).total_seconds()))
-                        print(f"ALERT RESOLVED {event['asset_id']} {event['sensor']} after {duration}")
-
-                
-                        alert_data = (event["timestamp"],event["asset_id"], event["sensor"])
-                        cur.execute(alert_resolve_query, alert_data )
-
+                events = events + stale_events
+                handle_events(cur, events)
 
 
             elif cur.rowcount == 0:

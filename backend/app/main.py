@@ -1,8 +1,10 @@
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
-from app.services.mqtt_consumer import connect_mqtt
+from app.services.mqtt_consumer import connect_mqtt, handle_events
 from app.services.anomaly import ZScoreDetector, AlertManager
 import psycopg
+from datetime import datetime, timezone
+import asyncio
 
 connection_uri = "postgresql://vanguard:vanguard@localhost:5432/telemetry"
 
@@ -32,12 +34,36 @@ async def lifespan(app: FastAPI):
     client = connect_mqtt(conn, detector, manager)
     # Handles MQTT traffic on a background thread
     client.loop_start()
+    task = asyncio.create_task(watch_for_stale_trucks(conn,manager))
     yield
-    # Shutdown: stop consuming before closing the database connection
+    # Shutdown: stop the stale-truck timer and consuming before closing the database connection
+    task.cancel()
+    # cancel() only requests it, so wait for the task to actually finish
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
     client.disconnect()
     client.loop_stop()
     conn.close()
 
+
+async def watch_for_stale_trucks(conn, manager):
+
+    cur = conn.cursor()
+
+   
+    while True:
+        try:
+            events = manager.check_stale(datetime.now(timezone.utc))
+            handle_events(cur, events)
+            
+        except psycopg.Error as e:
+            print(f"Stale check failed: {e}")
+
+        await asyncio.sleep(2)
+        
+   
 app = FastAPI(title="Vanguard OT", lifespan=lifespan)
 
 @app.get("/health")
