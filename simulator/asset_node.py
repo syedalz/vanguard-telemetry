@@ -2,6 +2,7 @@ from paho.mqtt import client as mqtt_client
 import random
 import json
 from datetime import datetime, timezone
+import threading
 
 class AssetNode:
     """One simulated fleet asset that drifts its sensor values and publishes them to MQTT."""
@@ -43,8 +44,8 @@ class AssetNode:
     OFFLINE_TICKS = (3, 10)
 
     # Chance per tick of a fault starting, how many ticks it lasts, and how each fault distorts its sensor
-    FAULT_CHANCE = 0.002
-    DURATION_RANGE = (3,10)
+    FAULT_CHANCE = 0.05
+    DURATION_RANGE = (10,20)
     COOLANT_CLIMB_RATE_C = (0.3, 0.5)
     COOLANT_MAX_TEMP_C = 120
     HYD_LEAK_EXTRA_DROP_CHANCE = 0.003
@@ -52,6 +53,7 @@ class AssetNode:
     HYD_MIN_PRESSURE_BAR = 5
     WEAR_SPIKE_MM_S = (7,12)
     WEAR_SPIKE_CHANCE = 0.15
+    LOG_LOCK = threading.Lock()
 
     def __init__(self,asset_id,asset_type,broker_host,port):
 
@@ -74,6 +76,18 @@ class AssetNode:
         self.fault_offset = 0
         self.fault_ticks_elapsed = 0
         self.fault_duration = None
+
+    def log_ground_truth(self, event, timestamp):
+
+        """Writes faults and service alerts to a JSON lines file"""
+
+        with self.LOG_LOCK:
+            fault_dict = {"event": event, "asset_id": self.asset_id, "fault": self.fault_type, "sensor": self.FAULT_SENSORS[self.fault_type], "timestamp": timestamp}
+            
+            with open("ground_truth.jsonl", "a", encoding="utf-8") as f:
+                f.write(json.dumps(fault_dict) + "\n")
+
+
 
 
     def drift(self, value, key):
@@ -99,6 +113,9 @@ class AssetNode:
             self.fault_ticks_elapsed = 0
 
             print(f"{self.asset_id}: {self.fault_type} started at {timestamp}")
+            self.log_ground_truth("fault_started", timestamp)
+
+           
 
         if self.fault_type is not None:
             self.fault_ticks_elapsed +=1
@@ -131,11 +148,14 @@ class AssetNode:
 
             if (self.fault_ticks_elapsed >= self.fault_duration):
                 print(f"{self.asset_id}: {self.fault_type} serviced at {timestamp}")
+                self.log_ground_truth("serviced", timestamp)
                 self.fault_type = None
                 self.fault_offset = 0
                 self.fault_ticks_elapsed = 0
                 self.fault_duration = None
-                
+
+            
+
 
 
     def connect_mqtt(self):
